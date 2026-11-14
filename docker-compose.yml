@@ -1,0 +1,220 @@
+# Stack de mídia pessoal do notebook servidor: i5-8250U, UHD 620, 930MX,
+# 16 GB de RAM, SSD de 500 GB e HD de 1 TB, Ubuntu 26.04.
+# A 930MX (GM108) não tem encoder de vídeo; o transcode fica na UHD 620.
+# Cliente: qBittorrent. Índice: Prowlarr. TV: Sonarr. Filmes: Radarr.
+# Legendas: Bazarr. Player: Jellyfin. Pedidos: Seerr.
+#
+# Plex:        docker compose -f docker-compose.yml -f docker-compose.plex.yml up -d
+# VPN no torrent: docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d
+# GPU:         docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+
+name: streaming
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-lsio-env: &lsio-env
+  PUID: ${PUID:-1000}
+  PGID: ${PGID:-1000}
+  TZ: ${TZ:-America/Sao_Paulo}
+  UMASK: ${UMASK:-002}
+
+services:
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      <<: *lsio-env
+      WEBUI_PORT: "8080"
+      TORRENTING_PORT: "6881"
+    volumes:
+      - ${CONFIG_ROOT:-./config}/qbittorrent:/config
+      # Mesmo prefixo /data/torrents que o Sonarr e o Radarr enxergam.
+      - ${DATA_ROOT:-./data}/torrents:/data/torrents
+    ports:
+      - "${BIND_IP:-0.0.0.0}:8080:8080"
+      - "${BIND_IP:-0.0.0.0}:6881:6881/tcp"
+      - "${BIND_IP:-0.0.0.0}:6881:6881/udp"
+    networks:
+      - streaming
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      <<: *lsio-env
+    volumes:
+      - ${CONFIG_ROOT:-./config}/prowlarr:/config
+    ports:
+      - "${BIND_IP:-0.0.0.0}:9696:9696"
+    networks:
+      - streaming
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9696/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # Ajuda o Prowlarr a falar com indexadores que exigem desafio de browser.
+  # Não publique a porta 8191: o serviço fica só na rede Docker.
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      LOG_LEVEL: info
+    # Chromium. No 8250U um pico sem teto compete com o transcode.
+    mem_limit: 1g
+    networks:
+      - streaming
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      <<: *lsio-env
+    volumes:
+      # /data inteiro: download e biblioteca no mesmo mount, para hardlink.
+      - ${CONFIG_ROOT:-./config}/sonarr:/config
+      - ${DATA_ROOT:-./data}:/data
+    ports:
+      - "${BIND_IP:-0.0.0.0}:8989:8989"
+    networks:
+      - streaming
+    depends_on:
+      qbittorrent:
+        condition: service_healthy
+      prowlarr:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8989/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      <<: *lsio-env
+    volumes:
+      - ${CONFIG_ROOT:-./config}/radarr:/config
+      - ${DATA_ROOT:-./data}:/data
+    ports:
+      - "${BIND_IP:-0.0.0.0}:7878:7878"
+    networks:
+      - streaming
+    depends_on:
+      qbittorrent:
+        condition: service_healthy
+      prowlarr:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7878/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      <<: *lsio-env
+    volumes:
+      - ${CONFIG_ROOT:-./config}/bazarr:/config
+      # O caminho interno precisa ser /data/media, igual ao que o Sonarr reporta.
+      - ${DATA_ROOT:-./data}/media:/data/media
+    ports:
+      - "${BIND_IP:-0.0.0.0}:6767:6767"
+    networks:
+      - streaming
+    depends_on:
+      sonarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy
+
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      <<: *lsio-env
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-993}"
+    volumes:
+      - ${CONFIG_ROOT:-./config}/jellyfin:/config
+      - ${DATA_ROOT:-./data}/media:/data/media
+    # Segmentos de transcode na RAM. A UHD 620 faz no máximo um ou dois 1080p;
+    # 2 GB cabem nos 16 GB e poupam o SSD.
+    tmpfs:
+      - /cache:size=2147483648,mode=1777
+    ports:
+      - "${BIND_IP:-0.0.0.0}:8096:8096/tcp"
+      - "${BIND_IP:-0.0.0.0}:7359:7359/udp"
+    networks:
+      - streaming
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8096/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    init: true
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      PORT: "5055"
+      LOG_LEVEL: info
+    volumes:
+      # O processo interno é o usuário node, UID 1000.
+      - ${CONFIG_ROOT:-./config}/seerr:/app/config
+    ports:
+      - "${BIND_IP:-0.0.0.0}:5055:5055"
+    networks:
+      - streaming
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5055/api/v1/settings/public"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+networks:
+  streaming:
+    name: streaming

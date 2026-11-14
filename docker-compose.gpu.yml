@@ -1,0 +1,4 @@
+# A UHD 620 do i5-8250U já está no docker-compose.yml (/dev/dri e VIDEO_GID/RENDER_GID).
+# Este arquivo fica para o alvo `make gpu` não quebrar. Não adiciona serviço.
+
+name: streaming

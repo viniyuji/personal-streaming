@@ -1,0 +1,38 @@
+# Plex ao lado do Jellyfin. Os dois leem a mesma biblioteca.
+# O Seerr só integra um media server por vez: Jellyfin ou Plex.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.plex.yml up -d
+#
+# PLEX_CLAIM (https://plex.tv/claim) só é necessário no primeiro start.
+
+name: streaming
+
+services:
+  plex:
+    image: lscr.io/linuxserver/plex:latest
+    container_name: plex
+    restart: unless-stopped
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-America/Sao_Paulo}
+      VERSION: docker
+      PLEX_CLAIM: ${PLEX_CLAIM:-}
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-993}"
+    volumes:
+      - ${CONFIG_ROOT:-./config}/plex:/config
+      - ${DATA_ROOT:-./data}/media:/data/media
+    ports:
+      - "${BIND_IP:-0.0.0.0}:32400:32400"
+    networks:
+      - streaming
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:32400/identity"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s

@@ -1,0 +1,60 @@
+# Coloca só o qBittorrent dentro do túnel. O resto da stack continua na LAN.
+#
+#   cp .env.example .env   # preencha VPN_SERVICE_PROVIDER e as chaves
+#   docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d
+#
+# No Sonarr e no Radarr, o host do download client passa a ser `gluetun`
+# (porta 8080), porque o qBittorrent deixa de ter IP próprio.
+#
+# A porta de torrent NÃO é publicada no host. Publicar 6881 aqui entregaria
+# o IP real. Entrada de peers, se o provedor encaminhar porta, entra pelo túnel
+# (FIREWALL_VPN_INPUT_PORTS).
+
+name: streaming
+
+services:
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      VPN_SERVICE_PROVIDER: ${VPN_SERVICE_PROVIDER:?defina VPN_SERVICE_PROVIDER no .env}
+      VPN_TYPE: ${VPN_TYPE:-wireguard}
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:-}
+      WIREGUARD_PRESHARED_KEY: ${WIREGUARD_PRESHARED_KEY:-}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:-}
+      SERVER_COUNTRIES: ${VPN_SERVER_COUNTRIES:-}
+      SERVER_CITIES: ${VPN_SERVER_CITIES:-}
+      OPENVPN_USER: ${OPENVPN_USER:-}
+      OPENVPN_PASSWORD: ${OPENVPN_PASSWORD:-}
+      # Web UI acessível pela rede Docker (Sonarr/Radarr -> gluetun:8080).
+      FIREWALL_INPUT_PORTS: "8080"
+      FIREWALL_VPN_INPUT_PORTS: ${VPN_FORWARDED_PORT:-}
+      FIREWALL_OUTBOUND_SUBNETS: ${LAN_SUBNET:-192.168.0.0/16,10.0.0.0/8,172.16.0.0/12}
+      UPDATER_PERIOD: 24h
+    volumes:
+      - ${CONFIG_ROOT:-./config}/gluetun:/gluetun
+    ports:
+      - "${BIND_IP:-0.0.0.0}:8080:8080"
+    healthcheck:
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    networks:
+      - streaming
+
+  qbittorrent:
+    network_mode: "service:gluetun"
+    # !reset tira portas e a rede própria; quem publica a 8080 é o Gluetun.
+    ports: !reset []
+    networks: !reset []
+    depends_on:
+      gluetun:
+        condition: service_healthy
